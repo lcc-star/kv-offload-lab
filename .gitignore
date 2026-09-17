@@ -196,6 +196,7 @@ cython_debug/
 
 # Local experiment artifacts
 study/**/runs/
+study/e2e_async_swap/results/
 study/scheduler_repro/result.txt
 *.nsys-rep
 *.ncu-rep

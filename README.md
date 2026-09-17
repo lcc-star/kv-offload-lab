@@ -19,6 +19,7 @@
 - [真实 CUDA 集成测试](study/async_swap/test_async_scheduler_cuda.py)
 - [真实模型 A/B 实验报告](study/e2e_async_swap/实验报告.md)
 - [真实模型 A/B 基准](study/e2e_async_swap/run_compare.py)
+- [D2H overlap 的 Nsight 分析](study/e2e_async_swap/Nsight分析报告.md)
 - [设计文档](设计文档.md)
 
 使用 uv 安装环境并运行 CPU 回归测试：

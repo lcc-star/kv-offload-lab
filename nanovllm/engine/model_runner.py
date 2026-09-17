@@ -28,6 +28,7 @@ class ModelRunner:
         self.enforce_eager = config.enforce_eager
         self.world_size = config.tensor_parallel_size
         self.async_swap = config.async_swap
+        self.unsafe_async_swap_out = config.unsafe_async_swap_out
         self.rank = rank
         self.event = event
 
@@ -257,10 +258,10 @@ class ModelRunner:
             if swap_out:
                 swap_out_event = self.swap_blocks_async(
                     self.kv_cache, self.cpu_kv_cache, swap_out)
-                # D2H overlap changed generated tokens under real swap pressure.
-                # Keep H2D asynchronous, but do not overlap D2H with model work
-                # until the unsafe dependency is understood.
-                swap_out_event.synchronize()
+                if not self.unsafe_async_swap_out:
+                    # D2H overlap changed generated tokens under real swap
+                    # pressure. Keep it available only for diagnostics.
+                    swap_out_event.synchronize()
             if swap_in:
                 swap_in_event = self.swap_blocks_async(
                     self.cpu_kv_cache, self.kv_cache, swap_in)

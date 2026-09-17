@@ -43,6 +43,8 @@ def parse_args():
     parser.add_argument("--max-model-len", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--unsafe-async-swap-out", action="store_true")
+    parser.add_argument("--profile-active-range", action="store_true")
     parser.add_argument(
         "--synchronize-swap",
         choices=("none", "in", "out", "both"),
@@ -75,6 +77,7 @@ def main():
         enforce_eager=True,
         tensor_parallel_size=1,
         async_swap=args.mode == "async",
+        unsafe_async_swap_out=args.unsafe_async_swap_out,
         gpu_memory_utilization=args.gpu_memory_utilization,
         num_kvcache_blocks=args.num_gpu_blocks or -1,
         cpu_swap_space_gb=args.cpu_swap_space_gb,
@@ -114,6 +117,8 @@ def main():
     sequences = list(scheduler.waiting)
 
     torch.cuda.reset_peak_memory_stats()
+    if args.profile_active_range:
+        torch.cuda.profiler.start()
     started = time.perf_counter()
     first_token_at = {}
     finished_at = {}
@@ -129,6 +134,8 @@ def main():
                 finished_at[seq.seq_id] = now
     torch.cuda.synchronize()
     ended = time.perf_counter()
+    if args.profile_active_range:
+        torch.cuda.profiler.stop()
 
     ttft_ms = [(first_token_at[seq.seq_id] - started) * 1000 for seq in sequences]
     tpot_ms = [
@@ -150,6 +157,7 @@ def main():
         "seed": args.seed,
         "sampling": "argmax",
         "synchronize_swap": args.synchronize_swap,
+        "unsafe_async_swap_out": args.unsafe_async_swap_out,
         "num_requests": args.num_requests,
         "input_len": args.input_len,
         "output_len": args.output_len,
