@@ -17,6 +17,8 @@
 - [对应测试代码](study/scheduler_repro/test_scheduler.py)
 - [单卡异步 swap 实验报告](study/async_swap/实验报告.md)
 - [真实 CUDA 集成测试](study/async_swap/test_async_scheduler_cuda.py)
+- [真实模型 A/B 实验报告](study/e2e_async_swap/实验报告.md)
+- [真实模型 A/B 基准](study/e2e_async_swap/run_compare.py)
 - [设计文档](设计文档.md)
 
 使用 uv 安装环境并运行 CPU 回归测试：

@@ -22,6 +22,9 @@ class FakeEvent:
     def query(self):
         return self.completed
 
+    def synchronize(self):
+        self.completed = True
+
 
 def scheduler(gpu_blocks=16, max_swap_skips=2, async_swap=False):
     # Scheduler only needs these scalar fields; no model/tokenizer construction.
@@ -243,6 +246,20 @@ class SchedulingRegressions(unittest.TestCase):
         self.assertFalse(outgoing)
         self.assertEqual(seq.status, SequenceStatus.RUNNING)
         self.assertFalse(seq.cpu_block_table)
+
+    def test_wait_for_pending_swap_blocks_on_one_event(self):
+        s = scheduler(gpu_blocks=3, async_swap=True)
+        seq = add_running(s, 1000, prompt_length=2)
+        s.running.remove(seq)
+        s.preempt(seq)
+        event = FakeEvent()
+        s.bind_swap_events(None, event)
+
+        s.wait_for_pending_swap()
+        s.reclaim_completed_swaps()
+
+        self.assertTrue(event.completed)
+        self.assertEqual(seq.status, SequenceStatus.SWAPPED)
 
 
 if __name__ == '__main__':

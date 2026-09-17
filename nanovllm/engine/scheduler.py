@@ -179,6 +179,13 @@ class Scheduler:
                 self.swapping_in.remove(seq)
                 self.running.appendleft(seq)
 
+    def wait_for_pending_swap(self):
+        for queue in (self.swapping_out, self.swapping_in):
+            for seq in queue:
+                if seq.swap_event is not None:
+                    seq.swap_event.synchronize()
+                    return
+
     def postprocess(self, seqs: list[Sequence], token_ids: list[int]) -> list[bool]:
         for seq, token_id in zip(seqs, token_ids):
             seq.append_token(token_id)

@@ -48,6 +48,10 @@ class LLMEngine:
 
     def step(self):
         seqs, is_prefill, swap_in, swap_out = self.scheduler.schedule()
+        if self.async_swap and not seqs and not swap_in and not swap_out:
+            self.scheduler.wait_for_pending_swap()
+            self.scheduler.reclaim_completed_swaps()
+            return [], 0
         result = self.model_runner.call("run", seqs, is_prefill, swap_in, swap_out)
         if self.async_swap:
             token_ids, swap_in_event, swap_out_event = result
