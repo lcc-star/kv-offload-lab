@@ -40,11 +40,33 @@ unsafe 组还执行了 18 个 swap-out 和 18 个 swap-in，safe 组各执行 12
 
 时间线证明大块 D2H 与 GEMM、attention 和 KV 写入 kernel 同时执行，并且这种重叠与输出分叉同时出现。Nsight Systems 时间线不包含每个 kernel 实际访问的 KV block 编号，因此不能据此断言 D2H 和 kernel 访问了同一物理地址。
 
-还存在另一种可能：DMA 竞争改变了包含归约操作的 kernel 执行顺序，引入很小的数值差异；当两个候选 token 的 logits 很接近时，argmax 可能改变，随后自回归输出发生级联分叉。要区分数据竞争和数值敏感性，需要在首个分叉 token 处保存 top-k logits，并记录该请求的 block table 与 D2H source block。
+## 首个分叉 token 的数值分析
+
+进一步记录请求 block table、pending D2H blocks 和完整 logits 后发现：
+
+- 分叉发生在请求索引 10 的第 2 个生成 token。
+- 该请求在 safe 和 unsafe 两组中都没有发生 swap。
+- 该请求的 GPU blocks 与 pending D2H source blocks 没有交集。
+- safe 组在该位置有三个候选 logits 同为 16.125，argmax 选择 token 1986。
+- unsafe 组 token 13874 为 16.125，其他主要候选为 16.0，argmax 变为 13874。
+
+完整 151,936 维 logits 的比较如下：
+
+| 指标 | 数值 |
+| --- | ---: |
+| 余弦相似度 | 0.999979 |
+| 最大绝对误差 | 0.15625 |
+| 平均绝对误差 | 0.06650 |
+| RMSE | 0.06970 |
+| 误差大于 0.125 的元素 | 6 |
+
+这些结果不支持“分叉请求的 KV block 被 D2H 覆盖”这一解释。更符合现有证据的解释是：D2H overlap 改变了调度轨迹、物理 block 分配或 GPU kernel 并发状态，引起 BF16 数值漂移；该 token 的前三个候选原本恰好并列，因此小幅漂移改变 argmax，随后自回归生成发生级联分叉。
+
+这仍然是基于实验的推断。若要确定具体是哪一个 kernel 产生差异，需要保存逐层激活或对首个分叉步骤执行逐层对比。
 
 ## 当前决策
 
-生产配置继续等待 D2H event，只开放已经通过输出一致性验证的 H2D overlap。unsafe-async-swap-out 仅用于诊断，默认关闭，并且要求同时开启 async-swap。
+生产配置继续等待 D2H event，只开放已经通过逐 token 一致性验证的 H2D overlap。虽然完整 logits 高度相似，但本项目当前把确定性输出作为验收条件，因此不会用数值容差为 D2H overlap 放行。unsafe-async-swap-out 仅用于诊断，默认关闭，并且要求同时开启 async-swap。
 
 复现实验：
 

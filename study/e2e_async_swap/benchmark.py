@@ -25,7 +25,31 @@ def percentile(values, fraction):
 
 
 class GreedySampler(nn.Module):
+    def __init__(self, trace_topk=0):
+        super().__init__()
+        self.trace_topk = trace_topk
+        self.current_seq_ids = []
+        self.current_contexts = []
+        self.records = {}
+        self.logits_seq_id = None
+        self.saved_logits = []
+
     def forward(self, logits, temperatures):
+        if self.trace_topk:
+            values, token_ids = logits.float().topk(self.trace_topk, dim=-1)
+            for row, seq_id in enumerate(self.current_seq_ids):
+                row_values = values[row].tolist()
+                row_token_ids = token_ids[row].tolist()
+                record = {
+                    "token_ids": row_token_ids,
+                    "logits": row_values,
+                    "top1_top2_margin": row_values[0] - row_values[1],
+                }
+                if row < len(self.current_contexts):
+                    record.update(self.current_contexts[row])
+                self.records.setdefault(seq_id, []).append(record)
+                if seq_id == self.logits_seq_id:
+                    self.saved_logits.append(logits[row].float().cpu())
         return logits.argmax(dim=-1)
 
 
@@ -45,6 +69,9 @@ def parse_args():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--unsafe-async-swap-out", action="store_true")
     parser.add_argument("--profile-active-range", action="store_true")
+    parser.add_argument("--trace-correctness", action="store_true")
+    parser.add_argument("--trace-logits-request-index", type=int)
+    parser.add_argument("--logits-output", type=Path)
     parser.add_argument(
         "--synchronize-swap",
         choices=("none", "in", "out", "both"),
@@ -57,6 +84,8 @@ def main():
     args = parse_args()
     if args.input_len + args.output_len > args.max_model_len:
         raise ValueError("input_len + output_len must not exceed max_model_len")
+    if args.logits_output and not args.trace_correctness:
+        raise ValueError("logits-output requires trace-correctness")
     from nanovllm import LLM, SamplingParams
 
     random = Random(args.seed)
@@ -85,7 +114,8 @@ def main():
         max_num_batched_tokens=args.max_model_len,
         max_model_len=args.max_model_len,
     )
-    llm.model_runner.sampler = GreedySampler()
+    sampler = GreedySampler(trace_topk=5 if args.trace_correctness else 0)
+    llm.model_runner.sampler = sampler
     if args.synchronize_swap != "none":
         original_swap_blocks_async = llm.model_runner.swap_blocks_async
 
@@ -101,12 +131,46 @@ def main():
 
     scheduler = llm.scheduler
     swap_counts = {"in_blocks": 0, "out_blocks": 0, "pending_only_steps": 0}
+    swap_trace = []
+    schedule_step = 0
     original_schedule = scheduler.schedule
 
     def tracked_schedule():
+        nonlocal schedule_step
+        schedule_step += 1
         scheduled, is_prefill, swap_in, swap_out = original_schedule()
+        sampler.current_seq_ids = [seq.seq_id for seq in scheduled]
+        pending_swap_out_blocks = sorted({
+            block_id
+            for seq in scheduler.swapping_out
+            for block_id in seq.block_table
+        })
+        sampler.current_contexts = [
+            {
+                "request_gpu_blocks": list(seq.block_table),
+                "pending_swap_out_gpu_blocks": pending_swap_out_blocks,
+                "shares_pending_swap_out_block": bool(
+                    set(seq.block_table) & set(pending_swap_out_blocks)
+                ),
+            }
+            for seq in scheduled
+        ]
         swap_counts["in_blocks"] += len(swap_in)
         swap_counts["out_blocks"] += len(swap_out)
+        if args.trace_correctness:
+            for direction, sequences in (
+                ("out", scheduler._new_swap_out),
+                ("in", scheduler._new_swap_in),
+            ):
+                for seq in sequences:
+                    swap_trace.append({
+                        "step": schedule_step,
+                        "direction": direction,
+                        "seq_id": seq.seq_id,
+                        "num_completion_tokens": seq.num_completion_tokens,
+                        "gpu_blocks": list(seq.block_table),
+                        "cpu_blocks": list(seq.cpu_block_table),
+                    })
         if not scheduled and (scheduler.swapping_in or scheduler.swapping_out):
             swap_counts["pending_only_steps"] += 1
         return scheduled, is_prefill, swap_in, swap_out
@@ -115,6 +179,10 @@ def main():
     for prompt in prompts:
         llm.add_request(prompt, sampling)
     sequences = list(scheduler.waiting)
+    if args.trace_logits_request_index is not None:
+        sampler.logits_seq_id = sequences[
+            args.trace_logits_request_index
+        ].seq_id
 
     torch.cuda.reset_peak_memory_stats()
     if args.profile_active_range:
@@ -186,6 +254,16 @@ def main():
             seq.completion_token_ids for seq in sequences
         ],
     }
+    if args.trace_correctness:
+        result["request_seq_ids"] = [seq.seq_id for seq in sequences]
+        result["topk_trace"] = {
+            str(seq_id): records
+            for seq_id, records in sampler.records.items()
+        }
+        result["swap_trace"] = swap_trace
+    if args.logits_output:
+        args.logits_output.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(torch.stack(sampler.saved_logits), args.logits_output)
     rendered = json.dumps(result, ensure_ascii=False, sort_keys=True)
     print("RESULT_JSON=" + rendered)
     if args.output:
