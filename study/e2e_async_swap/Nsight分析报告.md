@@ -66,7 +66,7 @@ unsafe 组还执行了 18 个 swap-out 和 18 个 swap-in，safe 组各执行 12
 
 ## 当前决策
 
-生产配置继续等待 D2H event，只开放已经通过逐 token 一致性验证的 H2D overlap。虽然完整 logits 高度相似，但本项目当前把确定性输出作为验收条件，因此不会用数值容差为 D2H overlap 放行。unsafe-async-swap-out 仅用于诊断，默认关闭，并且要求同时开启 async-swap。
+生产配置继续等待 D2H event。后续正式矩阵表明，仅 H2D overlap 在部分负载下也可能因为调度和数值轨迹变化而与同步基线产生 token 分叉，因此逐 token 一致只能作为具体负载的观测，不能作为异步执行的普遍保证。虽然完整 logits 高度相似，本项目仍不会用单次性能结果为 D2H overlap 放行。unsafe-async-swap-out 仅用于诊断，默认关闭，并且要求同时开启 async-swap。
 
 复现实验：
 
