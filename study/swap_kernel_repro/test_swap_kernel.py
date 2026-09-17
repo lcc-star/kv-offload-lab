@@ -28,6 +28,14 @@ def run_swap(src: torch.Tensor, dst: torch.Tensor, mappings: list[tuple[int, int
     torch.cuda.synchronize()
 
 
+def run_copy_2d(src: torch.Tensor, dst: torch.Tensor,
+                mappings: list[tuple[int, int]]) -> None:
+    mapping = torch.tensor(mappings, dtype=torch.int64, device="cpu")
+    logical_block_bytes = src[:, :, 0].numel() * src.element_size()
+    SWAP_OPS.copy_blocks_2d(src, dst, mapping, logical_block_bytes)
+    torch.cuda.synchronize()
+
+
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required")
 class SwapKernelLayoutTests(unittest.TestCase):
     def test_non_identity_swap_out_copies_logical_blocks_only(self):
@@ -65,6 +73,46 @@ class SwapKernelLayoutTests(unittest.TestCase):
         gpu[:, :, 4] = -2
         untouched = gpu.cpu().clone()
         run_swap(cpu, gpu, [(3, 2), (0, 5)])
+
+        self.assertTrue(torch.equal(gpu[:, :, 2].cpu(), original[:, :, 1]))
+        self.assertTrue(torch.equal(gpu[:, :, 5].cpu(), original[:, :, 4]))
+        for block_id in (0, 1, 3, 4):
+            self.assertTrue(torch.equal(gpu[:, :, block_id].cpu(), untouched[:, :, block_id]))
+
+    def test_memcpy2d_non_identity_swap_out(self):
+        gpu = coordinate_tensor((2, 2, 6, 4, 1, 2), device="cuda")
+        cpu = torch.full(
+            (2, 2, 4, 4, 1, 2),
+            -1,
+            dtype=torch.int32,
+            device="cpu",
+            pin_memory=True,
+        )
+        before = gpu.cpu().clone()
+
+        run_copy_2d(gpu, cpu, [(1, 3), (4, 0)])
+
+        self.assertTrue(torch.equal(cpu[:, :, 3], before[:, :, 1]))
+        self.assertTrue(torch.equal(cpu[:, :, 0], before[:, :, 4]))
+        self.assertTrue(torch.all(cpu[:, :, 1] == -1))
+        self.assertTrue(torch.all(cpu[:, :, 2] == -1))
+
+    def test_memcpy2d_round_trip_to_different_gpu_blocks(self):
+        gpu = coordinate_tensor((2, 2, 6, 4, 1, 2), device="cuda")
+        cpu = torch.full(
+            (2, 2, 4, 4, 1, 2),
+            -1,
+            dtype=torch.int32,
+            device="cpu",
+            pin_memory=True,
+        )
+        original = gpu.cpu().clone()
+        run_copy_2d(gpu, cpu, [(1, 3), (4, 0)])
+
+        gpu[:, :, 2] = -2
+        gpu[:, :, 5] = -2
+        untouched = gpu.cpu().clone()
+        run_copy_2d(cpu, gpu, [(3, 2), (0, 5)])
 
         self.assertTrue(torch.equal(gpu[:, :, 2].cpu(), original[:, :, 1]))
         self.assertTrue(torch.equal(gpu[:, :, 5].cpu(), original[:, :, 4]))
