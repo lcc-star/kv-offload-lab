@@ -135,8 +135,10 @@ class BlockManager:
         seq._swap_block_meta = block_meta
         return mappings
 
-    def can_swap_in(self, seq: Sequence) -> bool:
-        return len(self.free_block_ids) >= len(seq.cpu_block_table)
+    def can_swap_in(self, seq: Sequence, reserved_append_blocks: int = 0) -> bool:
+        needs_append = len(seq) % self.block_size == 1
+        required = len(seq.cpu_block_table) + reserved_append_blocks + needs_append
+        return len(self.free_block_ids) >= required
 
     def swap_in(self, seq: Sequence) -> list[tuple[int, int]]:
         mappings = []

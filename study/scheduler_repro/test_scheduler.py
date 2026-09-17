@@ -87,19 +87,30 @@ class SchedulingRegressions(unittest.TestCase):
         self.assertEqual(len(incoming), 2)
         self.assertFalse(outgoing)
 
-    def test_restoring_kv_does_not_guarantee_append_space(self):
+    def test_swap_in_requires_space_for_next_append(self):
         s = scheduler(gpu_blocks=2)
         seq = add_running(s, 1000, prompt_length=512)
         move_to_cpu(s, seq)
         bm = s.block_manager
         self.assertEqual(len(seq), 513)
         self.assertEqual(len(seq.cpu_block_table), 2)
-        admitted = bm.can_swap_in(seq)
-        # Proposed stronger contract, not the current API's documented guarantee.
-        if admitted:
-            bm.swap_in(seq)
-            self.assertTrue(bm.can_append(seq),
-                            'Swap-in admitted, but next decode needs a third GPU block')
+        self.assertFalse(bm.can_swap_in(seq))
+
+    def test_multiple_swap_ins_reserve_append_space(self):
+        s = scheduler(gpu_blocks=5)
+        first = add_running(s, 1000, prompt_length=512)
+        second = add_running(s, 2000, prompt_length=512)
+        move_to_cpu(s, first)
+        move_to_cpu(s, second)
+
+        seqs, prefill, incoming, outgoing = s.schedule()
+
+        self.assertFalse(prefill)
+        self.assertEqual(seqs, [second])
+        self.assertEqual(len(incoming), 2)
+        self.assertFalse(outgoing)
+        self.assertEqual(list(s.swapped), [first])
+        self.assertEqual(len(s.block_manager.free_block_ids), 2)
 
 
 if __name__ == '__main__':

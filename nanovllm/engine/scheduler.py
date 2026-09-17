@@ -45,16 +45,19 @@ class Scheduler:
             return scheduled_seqs, True, swap_in_mappings, swap_out_mappings
 
         # swap-in: try to bring swapped sequences back to GPU
-        while self.swapped and num_seqs < self.max_num_seqs:
+        num_swap_ins = 0
+        reserved_append_blocks = 0
+        while self.swapped and num_swap_ins < self.max_num_seqs:
             seq = self.swapped[0]
-            if not self.block_manager.can_swap_in(seq):
+            if not self.block_manager.can_swap_in(seq, reserved_append_blocks):
                 break
             mappings = self.block_manager.swap_in(seq)
             swap_in_mappings.extend(mappings)
             seq.status = SequenceStatus.RUNNING
             self.swapped.popleft()
             self.running.appendleft(seq)
-            num_seqs += 1
+            num_swap_ins += 1
+            reserved_append_blocks += len(seq) % self.block_manager.block_size == 1
 
         # decode
         while self.running and num_seqs < self.max_num_seqs:
