@@ -10,6 +10,7 @@ class Scheduler:
     def __init__(self, config: Config):
         self.max_num_seqs = config.max_num_seqs
         self.max_num_batched_tokens = config.max_num_batched_tokens
+        self.max_swap_skips = config.max_swap_skips
         self.eos = config.eos
         self.block_manager = BlockManager(config.num_kvcache_blocks, config.kvcache_block_size, config.num_cpu_blocks)
         self.waiting: deque[Sequence] = deque()
@@ -48,16 +49,29 @@ class Scheduler:
         num_swap_ins = 0
         reserved_append_blocks = 0
         while self.swapped and num_swap_ins < self.max_num_seqs:
-            seq = self.swapped[0]
-            if not self.block_manager.can_swap_in(seq, reserved_append_blocks):
-                break
+            head = self.swapped[0]
+            seq = head
+            bypassed_head = False
+            if not self.block_manager.can_swap_in(head, reserved_append_blocks):
+                if head.swap_skip_count >= self.max_swap_skips:
+                    break
+                seq = next((candidate for candidate in list(self.swapped)[1:]
+                            if self.block_manager.can_swap_in(
+                                candidate, reserved_append_blocks)), None)
+                if seq is None:
+                    break
+                head.swap_skip_count += 1
+                bypassed_head = True
             mappings = self.block_manager.swap_in(seq)
             swap_in_mappings.extend(mappings)
             seq.status = SequenceStatus.RUNNING
-            self.swapped.popleft()
+            seq.swap_skip_count = 0
+            self.swapped.remove(seq)
             self.running.appendleft(seq)
             num_swap_ins += 1
             reserved_append_blocks += len(seq) % self.block_manager.block_size == 1
+            if bypassed_head:
+                break
 
         # decode
         while self.running and num_seqs < self.max_num_seqs:
@@ -77,6 +91,7 @@ class Scheduler:
         return scheduled_seqs, False, swap_in_mappings, swap_out_mappings
 
     def preempt(self, seq: Sequence) -> list[tuple[int, int]]:
+        seq.swap_skip_count = 0
         if self.block_manager.can_swap_out(seq):
             mappings = self.block_manager.swap_out(seq)
             seq.status = SequenceStatus.SWAPPED

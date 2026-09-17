@@ -15,11 +15,12 @@ from nanovllm.engine.scheduler import Scheduler
 from nanovllm.engine.sequence import Sequence, SequenceStatus
 
 
-def scheduler(gpu_blocks=16):
+def scheduler(gpu_blocks=16, max_swap_skips=2):
     # Scheduler only needs these scalar fields; no model/tokenizer construction.
     return Scheduler(SimpleNamespace(max_num_seqs=4, max_num_batched_tokens=4096,
                      eos=-1, num_kvcache_blocks=gpu_blocks,
-                     kvcache_block_size=256, num_cpu_blocks=16))
+                     kvcache_block_size=256, num_cpu_blocks=16,
+                     max_swap_skips=max_swap_skips))
 
 
 def add_running(s, seed, prompt_length=2):
@@ -111,6 +112,69 @@ class SchedulingRegressions(unittest.TestCase):
         self.assertFalse(outgoing)
         self.assertEqual(list(s.swapped), [first])
         self.assertEqual(len(s.block_manager.free_block_ids), 2)
+
+    def test_blocked_head_allows_first_fitting_request_to_bypass(self):
+        s = scheduler(gpu_blocks=5)
+        candidate = add_running(s, 1000, prompt_length=256)
+        move_to_cpu(s, candidate)
+        head = add_running(s, 2000, prompt_length=1024)
+        move_to_cpu(s, head)
+        blocker = add_running(s, 4000, prompt_length=257)
+
+        seqs, prefill, incoming, outgoing = s.schedule()
+
+        self.assertFalse(prefill)
+        self.assertEqual(seqs, [candidate, blocker])
+        self.assertEqual(len(incoming), 1)
+        self.assertFalse(outgoing)
+        self.assertEqual(list(s.swapped), [head])
+        self.assertEqual(head.swap_skip_count, 1)
+
+    def test_head_at_skip_limit_blocks_later_request(self):
+        s = scheduler(gpu_blocks=5)
+        candidate = add_running(s, 1000, prompt_length=256)
+        move_to_cpu(s, candidate)
+        head = add_running(s, 2000, prompt_length=1024)
+        move_to_cpu(s, head)
+        blocker = add_running(s, 4000, prompt_length=257)
+        head.swap_skip_count = 2
+
+        seqs, prefill, incoming, outgoing = s.schedule()
+
+        self.assertFalse(prefill)
+        self.assertEqual(seqs, [blocker])
+        self.assertFalse(incoming)
+        self.assertFalse(outgoing)
+        self.assertEqual(list(s.swapped), [head, candidate])
+        self.assertEqual(head.swap_skip_count, 2)
+
+    def test_only_one_request_bypasses_head_per_round(self):
+        s = scheduler(gpu_blocks=6)
+        second = add_running(s, 1000, prompt_length=255)
+        move_to_cpu(s, second)
+        first = add_running(s, 2000, prompt_length=255)
+        move_to_cpu(s, first)
+        head = add_running(s, 3000, prompt_length=1024)
+        move_to_cpu(s, head)
+        blocker = add_running(s, 5000, prompt_length=513)
+
+        seqs, _, incoming, outgoing = s.schedule()
+
+        self.assertIn(first, seqs)
+        self.assertNotIn(second, seqs)
+        self.assertEqual(len(incoming), 1)
+        self.assertFalse(outgoing)
+        self.assertEqual(list(s.swapped), [head, second])
+        self.assertEqual(head.swap_skip_count, 1)
+
+    def test_preempt_resets_previous_skip_count(self):
+        s = scheduler()
+        seq = add_running(s, 1000)
+        seq.swap_skip_count = 2
+
+        move_to_cpu(s, seq)
+
+        self.assertEqual(seq.swap_skip_count, 0)
 
 
 if __name__ == '__main__':

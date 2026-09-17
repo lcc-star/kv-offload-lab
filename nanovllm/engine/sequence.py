@@ -26,6 +26,7 @@ class Sequence:
         self.num_cached_tokens = 0
         self.block_table = []
         self.cpu_block_table = []
+        self.swap_skip_count = 0
         self.temperature = sampling_params.temperature
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
