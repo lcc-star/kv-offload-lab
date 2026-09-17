@@ -27,11 +27,13 @@ class ModelRunner:
         self.block_size = config.kvcache_block_size
         self.enforce_eager = config.enforce_eager
         self.world_size = config.tensor_parallel_size
+        self.async_swap = config.async_swap
         self.rank = rank
         self.event = event
 
         dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
         torch.cuda.set_device(rank)
+        self.swap_stream = torch.cuda.Stream() if self.async_swap else None
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
@@ -228,16 +230,41 @@ class ModelRunner:
         swap_ops.swap_blocks(src, dst, block_mapping, block_size_in_bytes)
         torch.cuda.synchronize()
 
+    def swap_blocks_async(self, src, dst, mappings):
+        if not mappings:
+            return None
+        block_mapping = torch.tensor(mappings, dtype=torch.int64, device="cpu")
+        block_size_in_bytes = src[:, :, 0].numel() * src.element_size()
+        with torch.cuda.stream(self.swap_stream):
+            swap_ops.copy_blocks_2d(src, dst, block_mapping, block_size_in_bytes)
+            event = torch.cuda.Event()
+            event.record()
+        return event
+
     def run(self, seqs: list[Sequence], is_prefill: bool, swap_in=None, swap_out=None) -> list[int]:
-        if swap_out:
-            self.swap_blocks(self.kv_cache, self.cpu_kv_cache, swap_out)
-        if swap_in:
-            self.swap_blocks(self.cpu_kv_cache, self.kv_cache, swap_in)
-        input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
-        temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
-        logits = self.run_model(input_ids, positions, is_prefill)
-        token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
-        reset_context()
+        swap_in_event = swap_out_event = None
+        if self.async_swap:
+            if swap_in or swap_out:
+                self.swap_stream.wait_stream(torch.cuda.current_stream())
+            swap_out_event = self.swap_blocks_async(
+                self.kv_cache, self.cpu_kv_cache, swap_out)
+            swap_in_event = self.swap_blocks_async(
+                self.cpu_kv_cache, self.kv_cache, swap_in)
+        else:
+            if swap_out:
+                self.swap_blocks(self.kv_cache, self.cpu_kv_cache, swap_out)
+            if swap_in:
+                self.swap_blocks(self.cpu_kv_cache, self.kv_cache, swap_in)
+
+        token_ids = [] if self.rank == 0 else None
+        if seqs:
+            input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
+            temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
+            logits = self.run_model(input_ids, positions, is_prefill)
+            token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
+            reset_context()
+        if self.async_swap:
+            return token_ids, swap_in_event, swap_out_event
         return token_ids
 
     @torch.inference_mode()

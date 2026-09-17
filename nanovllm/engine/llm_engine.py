@@ -18,6 +18,7 @@ class LLMEngine:
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
         config = Config(model, **config_kwargs)
+        self.async_swap = config.async_swap
         self.ps = []
         self.events = []
         ctx = mp.get_context("spawn")
@@ -47,7 +48,12 @@ class LLMEngine:
 
     def step(self):
         seqs, is_prefill, swap_in, swap_out = self.scheduler.schedule()
-        token_ids = self.model_runner.call("run", seqs, is_prefill, swap_in, swap_out)
+        result = self.model_runner.call("run", seqs, is_prefill, swap_in, swap_out)
+        if self.async_swap:
+            token_ids, swap_in_event, swap_out_event = result
+            self.scheduler.bind_swap_events(swap_in_event, swap_out_event)
+        else:
+            token_ids = result
         self.scheduler.postprocess(seqs, token_ids)
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
         num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -len(seqs)

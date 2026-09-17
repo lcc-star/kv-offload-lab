@@ -15,12 +15,20 @@ from nanovllm.engine.scheduler import Scheduler
 from nanovllm.engine.sequence import Sequence, SequenceStatus
 
 
-def scheduler(gpu_blocks=16, max_swap_skips=2):
+class FakeEvent:
+    def __init__(self):
+        self.completed = False
+
+    def query(self):
+        return self.completed
+
+
+def scheduler(gpu_blocks=16, max_swap_skips=2, async_swap=False):
     # Scheduler only needs these scalar fields; no model/tokenizer construction.
     return Scheduler(SimpleNamespace(max_num_seqs=4, max_num_batched_tokens=4096,
                      eos=-1, num_kvcache_blocks=gpu_blocks,
                      kvcache_block_size=256, num_cpu_blocks=16,
-                     max_swap_skips=max_swap_skips))
+                     max_swap_skips=max_swap_skips, async_swap=async_swap))
 
 
 def add_running(s, seed, prompt_length=2):
@@ -175,6 +183,66 @@ class SchedulingRegressions(unittest.TestCase):
         move_to_cpu(s, seq)
 
         self.assertEqual(seq.swap_skip_count, 0)
+
+    def test_async_swap_out_releases_gpu_only_after_event(self):
+        s = scheduler(gpu_blocks=3, async_swap=True)
+        blocked = add_running(s, 1000, prompt_length=512)
+        victim = add_running(s, 2000, prompt_length=2)
+
+        seqs, prefill, incoming, outgoing = s.schedule()
+
+        self.assertFalse(prefill)
+        self.assertFalse(seqs)
+        self.assertFalse(incoming)
+        self.assertEqual(len(outgoing), 1)
+        self.assertEqual(victim.status, SequenceStatus.SWAPPING_OUT)
+        self.assertEqual(len(s.block_manager.free_block_ids), 0)
+        self.assertTrue(victim.block_table)
+
+        event = FakeEvent()
+        s.bind_swap_events(None, event)
+        event.completed = True
+        seqs, _, incoming, outgoing = s.schedule()
+
+        self.assertEqual(seqs, [blocked])
+        self.assertFalse(incoming)
+        self.assertFalse(outgoing)
+        self.assertEqual(victim.status, SequenceStatus.SWAPPED)
+        self.assertFalse(victim.block_table)
+        self.assertEqual(list(s.swapped), [victim])
+
+    def test_async_swap_in_runs_only_after_event(self):
+        s = scheduler(gpu_blocks=3, async_swap=True)
+        seq = add_running(s, 1000, prompt_length=2)
+        s.running.remove(seq)
+        s.block_manager.swap_out(seq)
+        seq.status = SequenceStatus.SWAPPED
+        s.swapped.append(seq)
+
+        seqs, prefill, incoming, outgoing = s.schedule()
+
+        self.assertFalse(prefill)
+        self.assertFalse(seqs)
+        self.assertEqual(len(incoming), 1)
+        self.assertFalse(outgoing)
+        self.assertEqual(seq.status, SequenceStatus.SWAPPING_IN)
+        self.assertTrue(seq.cpu_block_table)
+        self.assertTrue(seq.block_table)
+
+        event = FakeEvent()
+        s.bind_swap_events(event, None)
+        seqs, _, incoming, outgoing = s.schedule()
+        self.assertFalse(seqs)
+        self.assertFalse(incoming)
+        self.assertFalse(outgoing)
+
+        event.completed = True
+        seqs, _, incoming, outgoing = s.schedule()
+        self.assertEqual(seqs, [seq])
+        self.assertFalse(incoming)
+        self.assertFalse(outgoing)
+        self.assertEqual(seq.status, SequenceStatus.RUNNING)
+        self.assertFalse(seq.cpu_block_table)
 
 
 if __name__ == '__main__':

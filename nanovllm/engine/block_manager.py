@@ -93,14 +93,19 @@ class BlockManager:
                 self._deallocate_block(block_id)
         seq.num_cached_tokens = 0
         seq.block_table.clear()
+        seq.append_block_reserved = False
 
     def can_append(self, seq: Sequence) -> bool:
-        return len(self.free_block_ids) >= (len(seq) % self.block_size == 1)
+        needs_block = len(seq) % self.block_size == 1
+        return seq.append_block_reserved or len(self.free_block_ids) >= needs_block
 
     def may_append(self, seq: Sequence):
         block_table = seq.block_table
         last_block = self.blocks[block_table[-1]]
         if len(seq) % self.block_size == 1:
+            if seq.append_block_reserved:
+                seq.append_block_reserved = False
+                return
             assert last_block.hash != -1
             block_id = self.free_block_ids[0]
             self._allocate_block(block_id)
@@ -118,10 +123,9 @@ class BlockManager:
     def can_swap_out(self, seq: Sequence) -> bool:
         return len(self.free_cpu_block_ids) >= len(seq.block_table)
 
-    def swap_out(self, seq: Sequence) -> list[tuple[int, int]]:
+    def reserve_swap_out(self, seq: Sequence) -> list[tuple[int, int]]:
         mappings = []
         cpu_block_table = []
-        # Save block metadata before deallocating
         block_meta = []
         for gpu_block_id in seq.block_table:
             block = self.blocks[gpu_block_id]
@@ -130,9 +134,23 @@ class BlockManager:
             self.used_cpu_block_ids.add(cpu_block_id)
             mappings.append((gpu_block_id, cpu_block_id))
             cpu_block_table.append(cpu_block_id)
-        self.deallocate(seq)
         seq.cpu_block_table = cpu_block_table
         seq._swap_block_meta = block_meta
+        return mappings
+
+    def commit_swap_out(self, seq: Sequence):
+        self.deallocate(seq)
+
+    def abort_swap_out(self, seq: Sequence):
+        for cpu_block_id in seq.cpu_block_table:
+            self.used_cpu_block_ids.remove(cpu_block_id)
+            self.free_cpu_block_ids.append(cpu_block_id)
+        seq.cpu_block_table.clear()
+        seq._swap_block_meta = []
+
+    def swap_out(self, seq: Sequence) -> list[tuple[int, int]]:
+        mappings = self.reserve_swap_out(seq)
+        self.commit_swap_out(seq)
         return mappings
 
     def can_swap_in(self, seq: Sequence, reserved_append_blocks: int = 0) -> bool:
@@ -140,24 +158,40 @@ class BlockManager:
         required = len(seq.cpu_block_table) + reserved_append_blocks + needs_append
         return len(self.free_block_ids) >= required
 
-    def swap_in(self, seq: Sequence) -> list[tuple[int, int]]:
+    def reserve_swap_in(self, seq: Sequence) -> list[tuple[int, int]]:
         mappings = []
         block_table = []
-        block_meta = seq._swap_block_meta
-        for i, cpu_block_id in enumerate(seq.cpu_block_table):
+        for cpu_block_id in seq.cpu_block_table:
             gpu_block_id = self.free_block_ids[0]
             self._allocate_block(gpu_block_id)
-            # Restore block metadata
-            h, token_ids = block_meta[i]
-            if h != -1:
-                self.blocks[gpu_block_id].update(h, token_ids)
-                self.hash_to_block_id[h] = gpu_block_id
             mappings.append((cpu_block_id, gpu_block_id))
             block_table.append(gpu_block_id)
+        if len(seq) % self.block_size == 1:
+            gpu_block_id = self.free_block_ids[0]
+            self._allocate_block(gpu_block_id)
+            block_table.append(gpu_block_id)
+            seq.append_block_reserved = True
+        seq.block_table = block_table
+        return mappings
+
+    def commit_swap_in(self, seq: Sequence):
+        block_meta = seq._swap_block_meta
+        for i, (h, token_ids) in enumerate(block_meta):
+            if h != -1:
+                gpu_block_id = seq.block_table[i]
+                self.blocks[gpu_block_id].update(h, token_ids)
+                self.hash_to_block_id[h] = gpu_block_id
+        for cpu_block_id in seq.cpu_block_table:
             self.used_cpu_block_ids.remove(cpu_block_id)
             self.free_cpu_block_ids.append(cpu_block_id)
-        seq.block_table = block_table
         seq.cpu_block_table.clear()
         seq._swap_block_meta = []
         seq.num_cached_tokens = 0
+
+    def abort_swap_in(self, seq: Sequence):
+        self.deallocate(seq)
+
+    def swap_in(self, seq: Sequence) -> list[tuple[int, int]]:
+        mappings = self.reserve_swap_in(seq)
+        self.commit_swap_in(seq)
         return mappings

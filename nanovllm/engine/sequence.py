@@ -8,7 +8,9 @@ from nanovllm.sampling_params import SamplingParams
 class SequenceStatus(Enum):
     WAITING = auto()
     RUNNING = auto()
+    SWAPPING_OUT = auto()
     SWAPPED = auto()
+    SWAPPING_IN = auto()
     FINISHED = auto()
 
 
@@ -27,6 +29,8 @@ class Sequence:
         self.block_table = []
         self.cpu_block_table = []
         self.swap_skip_count = 0
+        self.append_block_reserved = False
+        self.swap_event = None
         self.temperature = sampling_params.temperature
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
