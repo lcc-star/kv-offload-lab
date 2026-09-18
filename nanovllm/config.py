@@ -21,6 +21,7 @@ class Config:
     max_swap_skips: int = 2
     async_swap: bool = False
     unsafe_async_swap_out: bool = False
+    batched_async_preemption: bool = True
 
     def __post_init__(self):
         assert os.path.isdir(self.model)

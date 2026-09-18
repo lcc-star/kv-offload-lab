@@ -12,6 +12,9 @@ class Scheduler:
         self.max_num_batched_tokens = config.max_num_batched_tokens
         self.max_swap_skips = config.max_swap_skips
         self.async_swap = getattr(config, "async_swap", False)
+        self.batched_async_preemption = getattr(
+            config, "batched_async_preemption", True
+        )
         self.eos = config.eos
         self.block_manager = BlockManager(config.num_kvcache_blocks, config.kvcache_block_size, config.num_cpu_blocks)
         self.waiting: deque[Sequence] = deque()
@@ -109,9 +112,16 @@ class Scheduler:
                     # blocked scheduling pass can unnecessarily evict the batch.
                     deferred.append(seq)
                 elif remaining and self.running:
-                    victim = self.running.pop()
-                    remaining -= 1
-                    swap_out_mappings.extend(self.preempt(victim))
+                    if self.batched_async_preemption:
+                        mappings, preempted = self.preempt_for_decode_capacity(
+                            [seq, *self.running]
+                        )
+                        swap_out_mappings.extend(mappings)
+                        remaining -= preempted
+                    else:
+                        victim = self.running.pop()
+                        remaining -= 1
+                        swap_out_mappings.extend(self.preempt(victim))
                     deferred.append(seq)
                 else:
                     swap_out_mappings.extend(self.preempt(seq))
@@ -134,6 +144,30 @@ class Scheduler:
         assert scheduled_seqs
         self.running.extendleft(reversed(scheduled_seqs))
         return scheduled_seqs, False, swap_in_mappings, swap_out_mappings
+
+    def preempt_for_decode_capacity(self, candidates):
+        """Batch the minimum victims needed by the next decode round."""
+        future_free = len(self.block_manager.free_block_ids)
+        future_demand = sum(
+            not self.block_manager.can_append(candidate)
+            for candidate in candidates
+        )
+        mappings = []
+        preempted = 0
+        while future_free < future_demand and self.running:
+            victim = self.running.pop()
+            victim_blocks = len(victim.block_table)
+            victim_needs_block = not self.block_manager.can_append(victim)
+            victim_mappings = self.preempt(victim)
+            if victim_mappings:
+                future_free += victim_blocks
+                mappings.extend(victim_mappings)
+            else:
+                # Recompute fallback releases its GPU blocks immediately.
+                future_free = len(self.block_manager.free_block_ids)
+            future_demand -= victim_needs_block
+            preempted += 1
+        return mappings, preempted
 
     def preempt(self, seq: Sequence) -> list[tuple[int, int]]:
         seq.swap_skip_count = 0

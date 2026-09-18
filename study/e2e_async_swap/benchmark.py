@@ -68,6 +68,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--unsafe-async-swap-out", action="store_true")
+    parser.add_argument("--serial-async-preemption", action="store_true")
     parser.add_argument("--profile-active-range", action="store_true")
     parser.add_argument("--trace-correctness", action="store_true")
     parser.add_argument("--trace-logits-request-index", type=int)
@@ -107,6 +108,7 @@ def main():
         tensor_parallel_size=1,
         async_swap=args.mode == "async",
         unsafe_async_swap_out=args.unsafe_async_swap_out,
+        batched_async_preemption=not args.serial_async_preemption,
         gpu_memory_utilization=args.gpu_memory_utilization,
         num_kvcache_blocks=args.num_gpu_blocks or -1,
         cpu_swap_space_gb=args.cpu_swap_space_gb,
@@ -226,6 +228,7 @@ def main():
         "sampling": "argmax",
         "synchronize_swap": args.synchronize_swap,
         "unsafe_async_swap_out": args.unsafe_async_swap_out,
+        "batched_async_preemption": not args.serial_async_preemption,
         "num_requests": args.num_requests,
         "input_len": args.input_len,
         "output_len": args.output_len,

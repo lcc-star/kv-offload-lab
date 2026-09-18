@@ -26,12 +26,14 @@ class FakeEvent:
         self.completed = True
 
 
-def scheduler(gpu_blocks=16, max_swap_skips=2, async_swap=False):
+def scheduler(gpu_blocks=16, max_swap_skips=2, async_swap=False,
+              batched_async_preemption=True):
     # Scheduler only needs these scalar fields; no model/tokenizer construction.
     return Scheduler(SimpleNamespace(max_num_seqs=4, max_num_batched_tokens=4096,
                      eos=-1, num_kvcache_blocks=gpu_blocks,
                      kvcache_block_size=256, num_cpu_blocks=16,
-                     max_swap_skips=max_swap_skips, async_swap=async_swap))
+                     max_swap_skips=max_swap_skips, async_swap=async_swap,
+                     batched_async_preemption=batched_async_preemption))
 
 
 def add_running(s, seed, prompt_length=2):
@@ -239,6 +241,31 @@ class SchedulingRegressions(unittest.TestCase):
         self.assertFalse(incoming)
         self.assertFalse(outgoing)
         self.assertEqual(victim.status, SequenceStatus.SWAPPED)
+
+    def test_batched_preemption_selects_minimum_capacity(self):
+        s = scheduler(gpu_blocks=8, async_swap=True)
+        seqs = [add_running(s, index * 1000, prompt_length=512)
+                for index in range(4)]
+
+        scheduled, _, _, outgoing = s.schedule()
+
+        self.assertFalse(scheduled)
+        self.assertEqual(len(outgoing), 4)
+        self.assertEqual(list(s.running), seqs[:2])
+        self.assertEqual(list(s.swapping_out), list(reversed(seqs[2:])))
+
+    def test_serial_preemption_remains_available_for_ablation(self):
+        s = scheduler(gpu_blocks=8, async_swap=True,
+                      batched_async_preemption=False)
+        seqs = [add_running(s, index * 1000, prompt_length=512)
+                for index in range(4)]
+
+        scheduled, _, _, outgoing = s.schedule()
+
+        self.assertFalse(scheduled)
+        self.assertEqual(len(outgoing), 2)
+        self.assertEqual(list(s.running), seqs[:3])
+        self.assertEqual(list(s.swapping_out), [seqs[3]])
 
     def test_async_swap_in_runs_only_after_event(self):
         s = scheduler(gpu_blocks=3, async_swap=True)

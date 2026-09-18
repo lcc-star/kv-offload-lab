@@ -168,7 +168,7 @@ def main():
             for mode, mode_runs in runs.items()
         }
         baseline = modes["sync"]
-        for mode in ("safe_async", "full_async"):
+        for mode in (name for name in MODES if name != "sync"):
             modes[mode]["vs_sync_percent"] = {
                 "throughput": percent_change(
                     modes[mode]["throughput_tokens_per_s"]["mean"],

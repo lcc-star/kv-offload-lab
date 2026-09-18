@@ -23,6 +23,8 @@
 - [三方案正式矩阵报告](study/e2e_async_swap/三方案矩阵报告.md)
 - [异步 Swap 过度抢占修复报告](study/e2e_async_swap/过度抢占修复报告.md)
 - [KV 数据量与并发扩展实验报告](study/e2e_async_swap/KV与并发扩展实验报告.md)
+- [容量感知批量抢占优化报告（面试版）](study/e2e_async_swap/容量感知批量抢占优化报告.md)
+- [抢占策略消融实验入口](study/e2e_async_swap/run_preemption_ablation.py)
 - [D2H overlap 的 Nsight 分析](study/e2e_async_swap/Nsight分析报告.md)
 - [设计文档](设计文档.md)
 
