@@ -21,6 +21,7 @@
 - [真实模型 A/B 基准](study/e2e_async_swap/run_compare.py)
 - [三方案压力矩阵](study/e2e_async_swap/run_matrix.py)
 - [三方案正式矩阵报告](study/e2e_async_swap/三方案矩阵报告.md)
+- [异步 Swap 过度抢占修复报告](study/e2e_async_swap/过度抢占修复报告.md)
 - [D2H overlap 的 Nsight 分析](study/e2e_async_swap/Nsight分析报告.md)
 - [设计文档](设计文档.md)
 
@@ -37,7 +38,7 @@ uv run python study/scheduler_repro/test_scheduler.py
 
 当前项目包含模型执行、前缀缓存、张量并行、CUDA Graph、CPU swap、CUDA 拷贝，以及调度复现测试和中文分析。后续修复和优化将以本项目的独立提交记录。
 
-单卡异步 swap 的状态和数据正确性已经通过测试。下一步是在真实模型与受控并发负载下比较同步和异步路径；当前没有真实模型端到端性能收益结论。
+单卡异步 swap 的状态和数据正确性已经通过测试。真实模型压力实验发现并修复了 pending D2H 期间的同轮过度抢占；在 24 个 GPU KV block 的配置下，完全异步方案相对同步方案的吞吐差距从 -12.97% 缩小到 -0.72%。
 
 ## 数据与版本管理
 

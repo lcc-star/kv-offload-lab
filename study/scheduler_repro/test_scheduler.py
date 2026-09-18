@@ -214,6 +214,32 @@ class SchedulingRegressions(unittest.TestCase):
         self.assertFalse(victim.block_table)
         self.assertEqual(list(s.swapped), [victim])
 
+    def test_pending_swap_out_prevents_same_round_over_preemption(self):
+        s = scheduler(gpu_blocks=6, async_swap=True)
+        first = add_running(s, 1000, prompt_length=512)
+        second = add_running(s, 2000, prompt_length=512)
+        victim = add_running(s, 3000, prompt_length=512)
+
+        seqs, prefill, incoming, outgoing = s.schedule()
+
+        self.assertFalse(prefill)
+        self.assertFalse(seqs)
+        self.assertFalse(incoming)
+        self.assertEqual(len(outgoing), 2)
+        self.assertEqual(victim.status, SequenceStatus.SWAPPING_OUT)
+        self.assertEqual(list(s.running), [first, second])
+        self.assertEqual(list(s.swapping_out), [victim])
+
+        event = FakeEvent()
+        s.bind_swap_events(None, event)
+        event.completed = True
+        seqs, _, incoming, outgoing = s.schedule()
+
+        self.assertEqual(seqs, [first, second])
+        self.assertFalse(incoming)
+        self.assertFalse(outgoing)
+        self.assertEqual(victim.status, SequenceStatus.SWAPPED)
+
     def test_async_swap_in_runs_only_after_event(self):
         s = scheduler(gpu_blocks=3, async_swap=True)
         seq = add_running(s, 1000, prompt_length=2)

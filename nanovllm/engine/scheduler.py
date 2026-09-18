@@ -103,12 +103,15 @@ class Scheduler:
                     num_seqs += 1
                     self.block_manager.may_append(seq)
                     scheduled_seqs.append(seq)
+                elif self.swapping_out:
+                    # Pending D2H copies have not released their GPU blocks yet.
+                    # Wait for reclamation before choosing another victim, or one
+                    # blocked scheduling pass can unnecessarily evict the batch.
+                    deferred.append(seq)
                 elif remaining and self.running:
                     victim = self.running.pop()
                     remaining -= 1
                     swap_out_mappings.extend(self.preempt(victim))
-                    deferred.append(seq)
-                elif self.swapping_out:
                     deferred.append(seq)
                 else:
                     swap_out_mappings.extend(self.preempt(seq))
